@@ -1,9 +1,7 @@
-import json, secrets, string
-from storage import users, tokens
+import json, secrets
+from db import cursor, conn
 
-def generate_short_token(length=8):
-    alphabet = string.ascii_letters + string.digits
-    return ''.join(secrets.choice(alphabet) for _ in range(length))
+tokens = {}
 
 def register(handler, data):
     user_id = data.get("user_id")
@@ -11,26 +9,34 @@ def register(handler, data):
 
     if not user_id or not password:
         handler.set_headers(400)
-        handler.wfile.write(json.dumps({"error": "user_id and password required"}).encode())
+        handler.wfile.write(json.dumps({"error": "user_id and password are required"}).encode())
         return
 
-    if user_id in users:
-        handler.set_headers(400)
-        handler.wfile.write(json.dumps({"error": "User already exists"}).encode())
-    else:
-        users[user_id] = password
-        handler.set_headers(201)
-        handler.wfile.write(json.dumps({"message": "User created"}).encode())
+    cursor.execute(
+        "INSERT INTO users (user_id, password) VALUES (%s, %s)",
+        (user_id, password)
+    )
+    conn.commit()
+
+    handler.set_headers(201)
+    handler.wfile.write(b'{"message":"User created"}')
 
 def login(handler, data):
     user_id = data.get("user_id")
     password = data.get("password")
 
-    if users.get(user_id) == password:
-        token = generate_short_token()
-        tokens[token] = user_id
+    cursor.execute(
+        "SELECT id FROM users WHERE user_id=%s AND password=%s",
+        (user_id, password)
+    )
+
+    user = cursor.fetchone()
+
+    if user:
+        token = secrets.token_hex(8)
+        tokens[token] = user[0]
         handler.set_headers()
         handler.wfile.write(json.dumps({"token": token}).encode())
     else:
         handler.set_headers(401)
-        handler.wfile.write(json.dumps({"error": "Invalid credentials"}).encode())
+        handler.wfile.write(b'{"error":"Invalid credentials"}')

@@ -1,86 +1,129 @@
 import json
-from storage import students, tokens
+from db import cursor, conn
+from auth import tokens
 
-def add_student(handler, data): 
-    token = handler.headers.get("Authorization")
+def get_user_from_token(handler):
+    """Parses the Authorization header and returns the user_id if the token is valid."""
+    auth_header = handler.headers.get("Authorization")
+    token = None
+    if auth_header:
+        if auth_header.startswith("Bearer "):
+            token = auth_header.split(" ")[1]
+        else:
+            token = auth_header
 
-    if token not in tokens:
+    if not token or token not in tokens:
         handler.set_headers(401)
-        handler.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
+        handler.wfile.write(b'{"error":"Unauthorized"}')
+        return None
+
+    return tokens[token]
+
+# -------- ADD STUDENT --------
+def add_student(handler, data):
+    created_by_id = get_user_from_token(handler)
+    if not created_by_id:
         return
 
     name = data.get("name")
     age = data.get("age")
     course = data.get("course")
 
-    if not name or not age or not course:
+    if not all([name, age, course]):
         handler.set_headers(400)
-        handler.wfile.write(json.dumps({"error": "All fields required"}).encode())
+        handler.wfile.write(b'{"error":"Missing required fields: name, age, course"}')
         return
 
-    student_id = len(students) + 1
-    students.append({
-        "id": student_id,
-        "name": name,
-        "age": age,
-        "course": course
-    })
+    cursor.execute(
+        "INSERT INTO students (name, age, course, created_by_id) VALUES (%s, %s, %s, %s)",
+        (name, age, course, created_by_id)
+    )
+    conn.commit()
 
     handler.set_headers(201)
-    handler.wfile.write(json.dumps({"message": "Student added"}).encode())
+    handler.wfile.write(b'{"message":"Student added"}')
 
+
+# -------- LIST STUDENTS --------
 def list_students(handler):
-    token = handler.headers.get("Authorization")
-
-    if token not in tokens:
-        handler.set_headers(401)
-        handler.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
+    # The user must be authenticated to list students
+    user_id = get_user_from_token(handler)
+    if not user_id:
         return
+
+    cursor.execute("SELECT id, name, age, course, created_by_id FROM students WHERE created_by_id=%s", (user_id,))
+    rows = cursor.fetchall()
+
+    students = []
+    for r in rows:
+        students.append({
+            "id": r[0],
+            "name": r[1],
+            "age": r[2],
+            "course": r[3],
+            "created_by_id": r[4]
+        })
 
     handler.set_headers()
     handler.wfile.write(json.dumps(students).encode())
+
+
 # -------- UPDATE STUDENT --------
 def update_student(handler, data):
-    token = handler.headers.get("Authorization")
-
-    if token not in tokens:
-        handler.set_headers(401)
-        handler.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
+    user_id = get_user_from_token(handler)
+    if not user_id:
         return
 
     student_id = data.get("id")
+    if not student_id:
+        handler.set_headers(400)
+        handler.wfile.write(b'{"error":"ID is required"}')
+        return
 
-    for student in students:
-        if student["id"] == student_id:
-            student["name"] = data.get("name", student["name"])
-            student["age"] = data.get("age", student["age"])
-            student["course"] = data.get("course", student["course"])
+    fields = []
+    values = []
 
-            handler.set_headers()
-            handler.wfile.write(json.dumps({"message": "Student updated"}).encode())
-            return
+    for key in ["name", "age", "course"]:
+        if key in data:
+            fields.append(f"{key}=%s")
+            values.append(data[key])
 
-    handler.set_headers(404)
-    handler.wfile.write(json.dumps({"error": "Student not found"}).encode())
+    if not fields:
+        handler.set_headers(400)
+        handler.wfile.write(b'{"error":"No fields to update"}')
+        return
+
+    values.append(student_id)
+    values.append(user_id)  
+    sql = f"""
+UPDATE students
+SET {', '.join(fields)}
+WHERE id=%s AND created_by_id=%s
+"""
+    cursor.execute(sql, values)
+    conn.commit()
+
+    handler.set_headers()
+    handler.wfile.write(b'{"message":"Student updated"}')
 
 
 # -------- DELETE STUDENT --------
 def delete_student(handler, data):
-    token = handler.headers.get("Authorization")
-
-    if token not in tokens:
-        handler.set_headers(401)
-        handler.wfile.write(json.dumps({"error": "Unauthorized"}).encode())
+    user_id = get_user_from_token(handler)
+    if not user_id:
         return
 
     student_id = data.get("id")
+    if not student_id:
+        handler.set_headers(400)
+        handler.wfile.write(b'{"error":"ID is required"}')
+        return
 
-    for student in students:
-        if student["id"] == student_id:
-            students.remove(student)
-            handler.set_headers()
-            handler.wfile.write(json.dumps({"message": "Student deleted"}).encode())
-            return
+    cursor.execute(
+        "DELETE FROM students WHERE id=%s AND created_by_id=%s",
+        (student_id, user_id)
+    )
+    conn.commit()
 
-    handler.set_headers(404)
-    handler.wfile.write(json.dumps({"error": "Student not found"}).encode())
+    handler.set_headers()
+    handler.wfile.write(b'{"message":"Student deleted"}')

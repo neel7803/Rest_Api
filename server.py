@@ -46,8 +46,13 @@ class MyServer(BaseHTTPRequestHandler):
             self.set_headers(404)
             self.wfile.write(json.dumps({"error": "Route not found"}).encode())
     def do_PUT(self):
-        raw = self.read_body()
-        data = json.loads(raw) if raw else {}
+        try:
+            raw = self.read_body()
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            self.set_headers(400)
+            self.wfile.write(json.dumps({"error": "Invalid JSON format"}).encode())
+            return
 
         if self.path == "/students":
             update_student(self, data)
@@ -57,8 +62,13 @@ class MyServer(BaseHTTPRequestHandler):
 
 
     def do_DELETE(self):
-        raw = self.read_body()
-        data = json.loads(raw) if raw else {}
+        try:
+            raw = self.read_body()
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            self.set_headers(400)
+            self.wfile.write(json.dumps({"error": "Invalid JSON format"}).encode())
+            return
 
         if self.path == "/students":
             delete_student(self, data)
